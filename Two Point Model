@@ -1,0 +1,366 @@
+install.packages("tidyverse")
+library(tidyverse)
+install.packages("modelr")
+library(modelr)
+install.packages("dplyr")
+library(dplyr)
+install.packages("ggimage")
+library(ggimage)
+install.packages("nflfastR")
+library(nflfastR)
+install.packages("plyr")
+library(plyr)
+detach(package:plyr)
+install.packages("nfl4th")
+
+install.packages("ggpubr")
+library("ggpubr")
+
+
+pbp <- load_pbp(2018:2021)
+
+twopts <- pbp %>%
+  filter(is.na(two_point_conv_result) == FALSE) %>%
+  filter(yardline_100 == 2)
+
+twoyd <- pbp %>%
+  filter((ydstogo == 2 & down == 4) | (ydstogo == 2 & down == 3)
+         | (ydstogo == 1 & down == 4) | (ydstogo == 1 & down == 3)
+         | (ydstogo == 3 & down == 4) | (ydstogo == 3 & down == 3)) %>%
+  filter((play_type == "run") | (play_type == "pass"))
+
+alltwo <- twopts %>% rbind(twoyd)
+
+
+twoptingame <- twopts %>%
+  select(play_id, game_id, posteam, defteam, game_seconds_remaining, two_point_conv_result) %>%
+  mutate(ingame2ptsuccess = 0) %>%
+  mutate(successful2pt = case_when(two_point_conv_result == "success" ~ 1,
+                                   two_point_conv_result == "failure" ~ 0)) %>%
+  mutate(unsuccessful2pt = case_when(two_point_conv_result == "success" ~ 0,
+                                     two_point_conv_result == "failure" ~ 1))
+
+twoptingame <- twoptingame %>%
+  group_by(game_id, posteam) %>%
+  arrange(desc(game_seconds_remaining)) %>%
+  mutate(ingame2ptsuccess = cumsum(successful2pt)) %>%
+  mutate(ingame2ptsuccess = case_when(successful2pt == 1 ~ ingame2ptsuccess-1,
+                                      successful2pt == 0 ~ ingame2ptsuccess)) %>%
+  mutate(ingame2ptfailure = cumsum(unsuccessful2pt)) %>%
+  mutate(ingame2ptfailure = case_when(unsuccessful2pt == 1 ~ ingame2ptfailure-1,
+                                      unsuccessful2pt == 0 ~ ingame2ptfailure)) %>%
+  mutate(ingame2ptattempts = ingame2ptfailure+ingame2ptsuccess) %>%
+  mutate(ingame2ptsuccessrate = case_when(
+    ingame2ptattempts == 0 ~ 0.4735,
+    ingame2ptattempts != 0 ~ ingame2ptsuccess/ingame2ptattempts
+  )) %>%
+  ungroup()
+
+
+twoydingame <- twoyd %>%
+  select(play_id, game_id, posteam, defteam, game_seconds_remaining, ydstogo, yards_gained) %>%
+  mutate(ydspastlos = yards_gained-ydstogo) %>%
+  mutate(converted = case_when(
+    ydspastlos >= 0 ~ 1,
+    ydspastlos < 0 ~ 0
+  )) %>%
+  mutate(notconverted = case_when(converted == 1 ~ 0,
+                                  converted == 0 ~ 1))
+twoydingame <- twoydingame %>%
+  group_by(game_id, posteam) %>%
+  arrange(desc(game_seconds_remaining)) %>%
+  mutate(ingame2ydsuccess = cumsum(converted)) %>%
+  mutate(ingame2ydsuccess = case_when(converted == 1 ~ ingame2ydsuccess-1,
+                                      converted == 0 ~ ingame2ydsuccess)) %>%
+  mutate(ingame2ydfailure = cumsum(notconverted)) %>%
+  mutate(ingame2ydfailure = case_when(notconverted == 1 ~ ingame2ydfailure-1,
+                                      notconverted == 0 ~ ingame2ydfailure)) %>%
+  ungroup() %>%
+  mutate(ingame2ydattempts = ingame2ydfailure+ingame2ydsuccess) %>%
+  mutate(ingame2ydsuccessrate = case_when(
+    ingame2ydattempts == 0 ~ 0.5,
+    ingame2ydattempts != 0 ~ ingame2ydsuccess/ingame2ydattempts
+  )) %>%
+  ungroup()
+
+library(plyr)
+
+twoydingame <- rbind.fill(twoptingame, twoydingame)
+twoydingame[is.na(twoydingame)] <- 0
+
+detach(package:plyr)
+
+
+twoydingame <- twoydingame %>%
+  group_by(game_id, posteam) %>%
+  arrange(desc(game_seconds_remaining)) %>%
+  mutate(ingame2ydsuccess = cumsum(converted)) %>%
+  mutate(ingame2ydsuccess = case_when(converted == 1 ~ ingame2ydsuccess-1,
+                                      converted == 0 ~ ingame2ydsuccess)) %>%
+  mutate(ingame2ydfailure = cumsum(notconverted)) %>%
+  mutate(ingame2ydfailure = case_when(notconverted == 1 ~ ingame2ydfailure-1,
+                                      notconverted == 0 ~ ingame2ydfailure)) %>%
+  mutate(ingame2ydattempts = ingame2ydfailure+ingame2ydsuccess) %>%
+  mutate(ingame2ydsuccessrate = case_when(
+    ingame2ydattempts == 0 ~ 0.5,
+    ingame2ydattempts != 0 ~ ingame2ydsuccess/ingame2ydattempts
+  )) %>%
+  ungroup()
+
+
+seasonstats <- twoydingame %>%
+  select(play_id, game_id, posteam, defteam, game_seconds_remaining, successful2pt, unsuccessful2pt, converted, notconverted) %>%
+  mutate(year = substr(game_id, 1, 4)) %>%
+  mutate(week = substr(game_id, 6, 7)) %>%
+  mutate(week = as.numeric(week)) %>%
+  mutate(timescore = (week*10000 + (3600-game_seconds_remaining)))
+
+seasonstats <- seasonstats %>%
+  group_by(year, posteam) %>%
+  arrange((timescore)) %>%
+  mutate(inseason2ptsuccess = cumsum(successful2pt)) %>%
+  mutate(inseason2ptsuccess = case_when(successful2pt == 1 ~ inseason2ptsuccess-1,
+                                        successful2pt == 0 ~ inseason2ptsuccess)) %>%
+  mutate(inseason2ptfailure = cumsum(unsuccessful2pt)) %>%
+  mutate(inseason2ptfailure = case_when(unsuccessful2pt == 1 ~ inseason2ptfailure-1,
+                                        unsuccessful2pt == 0 ~ inseason2ptfailure)) %>%
+  mutate(inseason2ptattempts = inseason2ptfailure+inseason2ptsuccess) %>%
+  mutate(inseason2ptsuccessrate = case_when(
+    inseason2ptattempts == 0 ~ 0.4735,
+    inseason2ptattempts != 0 ~ inseason2ptsuccess/inseason2ptattempts
+  )) %>%
+  ungroup()
+
+seasonstats <- seasonstats %>%
+  group_by(year, defteam) %>%
+  arrange((timescore)) %>%
+  mutate(inseason2ptsuccessdef = cumsum(successful2pt)) %>%
+  mutate(inseason2ptsuccessdef = case_when(successful2pt == 1 ~ inseason2ptsuccessdef-1,
+                                           successful2pt == 0 ~ inseason2ptsuccessdef)) %>%
+  mutate(inseason2ptfailuredef = cumsum(unsuccessful2pt)) %>%
+  mutate(inseason2ptfailuredef = case_when(unsuccessful2pt == 1 ~ inseason2ptfailuredef-1,
+                                           unsuccessful2pt == 0 ~ inseason2ptfailuredef)) %>%
+  mutate(inseason2ptattemptsdef = inseason2ptfailuredef+inseason2ptsuccessdef) %>%
+  mutate(inseason2ptsuccessratedef = case_when(
+    inseason2ptattemptsdef == 0 ~ 0.4735,
+    inseason2ptattemptsdef != 0 ~ inseason2ptsuccessdef/inseason2ptattemptsdef
+  )) %>%
+  ungroup()
+
+seasonstats <- seasonstats %>%
+  group_by(year, posteam) %>%
+  arrange(timescore) %>%
+  mutate(inseason2ydsuccess = cumsum(converted)) %>%
+  mutate(inseason2ydsuccess = case_when(converted == 1 ~ inseason2ydsuccess-1,
+                                        converted == 0 ~ inseason2ydsuccess)) %>%
+  mutate(inseason2ydfailure = cumsum(notconverted)) %>%
+  mutate(inseason2ydfailure = case_when(notconverted == 1 ~ inseason2ydfailure-1,
+                                        notconverted == 0 ~ inseason2ydfailure)) %>%
+  mutate(inseason2ydattempts = inseason2ydfailure+inseason2ydsuccess) %>%
+  mutate(inseason2ydsuccessrate = case_when(
+    inseason2ydattempts == 0 ~ 0.5,
+    inseason2ydattempts != 0 ~ inseason2ydsuccess/inseason2ydattempts
+  )) %>%
+  ungroup()
+
+seasonstats <- seasonstats %>%
+  group_by(year, defteam) %>%
+  arrange(timescore) %>%
+  mutate(inseason2ydsuccessdef = cumsum(converted)) %>%
+  mutate(inseason2ydsuccessdef = case_when(converted == 1 ~ inseason2ydsuccessdef-1,
+                                           converted == 0 ~ inseason2ydsuccessdef)) %>%
+  mutate(inseason2ydfailuredef = cumsum(notconverted)) %>%
+  mutate(inseason2ydfailuredef = case_when(notconverted == 1 ~ inseason2ydfailuredef-1,
+                                           notconverted == 0 ~ inseason2ydfailuredef)) %>%
+  mutate(inseason2ydattemptsdef = inseason2ydfailuredef+inseason2ydsuccessdef) %>%
+  mutate(inseason2ydsuccessratedef = case_when(
+    inseason2ydattemptsdef == 0 ~ 0.5,
+    inseason2ydattemptsdef != 0 ~ inseason2ydsuccessdef/inseason2ydattemptsdef
+  )) %>%
+  ungroup()
+
+
+
+seasonstats <- seasonstats %>%
+  arrange(year, posteam)
+
+n <- 12
+cs <- cumsum(seasonstats$converted)
+seasonstats$last10 <- c(rep_len(NA, n - 1), tail(cs, -(n - 1)) - c(0, head(cs, -n)))
+
+seasonstats <- seasonstats %>%
+  mutate(last10 = case_when(
+    converted == 1 ~ last10-1,
+    converted == 0 ~ last10
+  ))
+
+
+seasonstats <- seasonstats %>%
+  arrange(year, defteam)
+
+n <- 12
+cs <- cumsum(seasonstats$converted)
+seasonstats$last10def <- c(rep_len(NA, n - 1), tail(cs, -(n - 1)) - c(0, head(cs, -n)))
+
+seasonstats <- seasonstats %>%
+  mutate(last10def = case_when(
+    converted == 1 ~ last10def-1,
+    converted == 0 ~ last10def
+  ))
+
+
+
+library(ggplot2)
+library(ggpubr)
+library(jpeg)
+
+
+ggplot(team2021, aes(x=inseason2ydattempts, y=inseason2ydsuccessrate)) +
+  geom_line(size = 2, color = "dark green") + ylim(0, 1) + xlim(1, 105) +
+  ggtitle("Eagles 2021 Conversion Rate", subtitle = "Conversion Rate on 3rd and 4th downs of 1-3 yards") +
+  labs(x = "Attempts", y = "Rolling conversion rate") 
+
+alltwo <- twopts %>% rbind(twoyd)
+
+twoydingame <- twoydingame %>%
+  select(play_id, game_id, ingame2ydsuccessrate)
+
+twoptingame <- twoptingame %>%
+  select(play_id, game_id, ingame2ptsuccessrate)
+
+seasonstats <- seasonstats %>%
+  select(play_id, game_id, inseason2ptsuccessrate, inseason2ptsuccessratedef,
+         inseason2ydsuccessrate,inseason2ydsuccessratedef, last10, last10def)
+
+Model2pt <- alltwo %>%
+  merge(twoydingame, by = c("play_id", "game_id")) %>%
+  merge(twoptingame, by = c("play_id", "game_id")) %>%
+  merge(seasonstats, by = c("play_id", "game_id"))
+
+Model2pt <- nfl4th::add_2pt_probs(Model2pt)
+
+Model2pt <- Model2pt %>%
+  select(play_id, game_id, posteam, defteam, qtr, time, play_type, last10, last10def,  
+         posteam_score, defteam_score, ingame2ydsuccessrate, ingame2ptsuccessrate, play_type, 
+         inseason2ptsuccessrate, inseason2ptsuccessratedef, inseason2ydsuccessrate, game_seconds_remaining,  
+         inseason2ydsuccessratedef, wp_0, wp_1, wp_2, conv_1pt, conv_2pt, two_point_conv_result) %>%
+  mutate(successful2pt = case_when(two_point_conv_result == "success" ~ 1,
+                                   two_point_conv_result == "failure" ~ 0)) %>%
+  mutate(pps = posteam_score/(3600-game_seconds_remaining)) %>%
+  select(-two_point_conv_result, -game_seconds_remaining) %>%
+  mutate(year = substr(game_id, 1, 4))
+
+
+
+TrainingModel2pt <- Model2pt %>%
+  filter(year == "2018" | year == "2019" | year == "2020") %>%
+  filter(is.na(conv_2pt) == FALSE) %>%
+  mutate(yearscale = case_when(
+    year == "2018" ~ .4828,
+    year == "2019" ~ .5376,
+    year == "2020" ~ .5,
+  ))
+
+
+
+
+fit <- glm(successful2pt ~ ingame2ydsuccessrate + inseason2ptsuccessrate + yearscale + last10 + last10def + pps +
+             inseason2ptsuccessratedef + inseason2ydsuccessrate + inseason2ydsuccessratedef + conv_2pt + play_type, 
+           family="binomial", data=TrainingModel2pt)
+
+
+
+
+
+TestModel2pt <- Model2pt %>%
+  filter(year == "2021") %>%
+  filter(is.na(conv_2pt) == FALSE) %>%
+  mutate(yearscale = 0.4662)
+
+
+TestModel2pt <- TestModel2pt %>%
+  add_predictions(model = fit, type = "response", var = "Pred2pt")
+
+
+
+res <- cor.test(TestModel2pt$Pred2pt, TestModel2pt$successful2pt, 
+                method = "pearson")
+res
+
+
+
+
+
+
+GoFor2Graph <- TestModel2pt %>%
+  filter(play_id == "1653") %>%
+  select(posteam, defteam, qtr, time, posteam_score, defteam_score, wp_0, wp_1, wp_2, Pred2pt, conv_1pt, conv_1pt, conv_2pt)
+
+
+ZeroToOne <- read_csv("ZeroToOne.csv")
+
+ZeroToOne <- ZeroToOne %>%
+  mutate(xp = TwoPtRate) %>%
+  select(-TwoPtRate) %>%
+  mutate(wp_0 = 0.281, wp_1 = 0.325, wp_2 = 0.350)
+
+ZeroToOne <- ZeroToOne %>%
+  mutate(Eq2pt = ((wp_1-wp_0)/(wp_2-wp_0))*xp)
+
+
+
+ggplot(ZeroToOne, aes(xp, Eq2pt)) +
+  geom_area(fill = rgb(0, 0.5, 1, alpha = 0.5)) + ylim(0, 1) + 
+  ggtitle("NYJ vs HOU, 9-14, QTR 2, 01:13", subtitle = "Shaded Region means the team should kick the XP") +
+  labs(caption = "WP if 0pt = 28.1%, WP if 1pt = 32.5%, WP if 2pt = 35.0%", x = "XP%", y = "2pt%") +
+  geom_point(aes(x=0.93, y=0.615), colour="red", size = 5) + 
+  geom_label(label="My Pred", x=0.93-.05, y=0.615+.05, label.padding = unit(0.15, "lines"), label.size = 0.1, color = "red") +
+  geom_point(aes(x=0.93, y=0.446), colour="black", size = 5) + 
+  geom_label(label="BB Pred", x=0.93-.05, y=0.446-.05, label.padding = unit(0.15, "lines"), label.size = 0.1, color = "black")
+
+
+
+
+
+
+TwoPtMatrix <- TestModel2pt %>%
+mutate(gofor2wp = wp_2*Pred2pt + wp_0*(1-Pred2pt)) %>%
+  mutate(kickxpwp = wp_1*conv_1pt + wp_0*(1-conv_1pt)) %>%
+  mutate(twoptxpdiff = gofor2wp-kickxpwp) %>%
+  mutate(abs = abs(twoptxpdiff)) %>%
+  filter(abs > .01) %>%
+  mutate(good = case_when(
+    abs == twoptxpdiff ~ 1,
+    abs > twoptxpdiff ~ 0
+  ))
+
+table(TwoPtMatrix$good)
+
+
+
+ModelXP <- read_csv("XP.csv")
+
+ModelXP <- ModelXP %>%
+  mutate(play_type = "pass") %>%
+  mutate(yearscale = 0.4662)
+
+
+ModelXP <- ModelXP %>%
+  add_predictions(model = fit, type = "response", var = "Pred2pt")
+
+
+
+
+XPMatrix <- ModelXP %>%
+  mutate(gofor2wp = wp_2*Pred2pt + wp_0*(1-Pred2pt)) %>%
+  mutate(kickxpwp = wp_1*conv_1pt + wp_0*(1-conv_1pt)) %>%
+  mutate(twoptxpdiff = gofor2wp-kickxpwp) %>%
+  mutate(abs = abs(twoptxpdiff)) %>%
+  filter(abs > .01) %>%
+  mutate(good = case_when(
+    abs == twoptxpdiff ~ 1,
+    abs > twoptxpdiff ~ 0
+  ))
+
+table(XPMatrix$good)
+
